@@ -1,6 +1,6 @@
 # 台股選股一條龍（參數化版本）
 
-主程式：`tw_stock_pipeline_param.py`  
+主程式：`tw_stock_screen.py`  
 此版本支援 **CLI 參數** 與 **YAML/JSON 設定檔 (`--config`)**，可自訂所有技術指標的「週期」與「門檻」。
 
 ---
@@ -33,12 +33,12 @@ python tw_stock_screen.py --start 2022-01-01 --end 2025-12-31 --report_all
 
 ### 2. 使用你自己的清單
 ```bash
-python tw_stock_pipeline_param.py --from_csv twse.csv tpex.csv --start 2022-01-01 --end 2025-12-31 --report_all
+python tw_stock_screen.py --from_csv twse.csv tpex.csv --start 2022-01-01 --end 2025-12-31 --report_all
 ```
 
 ### 3. 指定特定股票
 ```bash
-python tw_stock_pipeline_param.py --codes 2330,2317,8046 --report_all
+python tw_stock_screen.py --codes 2330,2317,8046 --report_all
 ```
 
 ---
