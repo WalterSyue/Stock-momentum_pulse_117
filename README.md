@@ -28,7 +28,7 @@ pip install pandas numpy requests yfinance
 
 ### 1. 完全自動 — 抓清單 ➜ 抓股價 ➜ 篩選
 ```bash
-python tw_stock_pipeline_param.py --start 2022-01-01 --end 2025-12-31 --report_all
+python tw_stock_screen.py --start 2022-01-01 --end 2025-12-31 --report_all
 ```
 
 ### 2. 使用你自己的清單
