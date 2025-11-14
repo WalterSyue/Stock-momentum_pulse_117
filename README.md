@@ -1,165 +1,212 @@
-# 台股選股一條龍（參數化版本）
 
-主程式：`tw_stock_screen.py`  
-此版本支援 **CLI 參數** 與 **YAML/JSON 設定檔 (`--config`)**，可自訂所有技術指標的「週期」與「門檻」。
+# 📈 小壞蛋台股終極策略
+
+小壞蛋幫你打造的 **台股終極自動化策略系統**  
+整合：
+
+- ✔️ 全市場掃描（上市 TWSE + 上櫃 TPEx）
+- ✔️ 五大進場訊號（EMA / KD / ADX / MACD / 量能）
+- ✔️ 出場訊號（只對「你持有的股票」推播）
+- ✔️ Telegram 美化卡片推播（中文）
+- ✔️ Cache + 黑名單自動化
+- ✔️ 回測：總報酬 / 勝率 / 年化報酬率
+- ✔️ 交易明細（進場日、進場價、退場日、退場價、獲利）
+- ✔️ config.yaml 參數化全部策略
+- ✔️ held_stocks.txt 管理你目前持有的股票
 
 ---
 
-## 🚀 功能總覽
-
-- 自動下載 TWSE / TPEx 全部股票清單  
-- 自動下載 Yahoo Finance 歷史資料  
-- 以五大條件進行選股（可全參數化）  
-- 中文化輸出（符合 / 不符合、出場原因）  
-- 完整報表 `tw_screen_report_all.csv`  
-- 可自由調校：EMA、MACD、KD、ADX、成交量均線
-
 ---
 
-## 📦 安裝（必要套件）
+# 📁 專案結構
 
-```bash
-pip install pandas numpy requests yfinance
+```
+tw_stock_pipeline/
+│
+├── tw_stock_pipeline.py       ← 主程式
+├── config.yaml                ← 所有策略參數
+├── held_stocks.txt            ← 你目前持有的股票
+├── valid_tw_codes.txt         ← 自動產生，全市場股票代碼
+├── error_codes.txt            ← 自動產生，不可下載的股票
+├── cache/                     ← 自動產生，股票日K快取
+│     └── 2330.TW.csv
+│     └── 2603.TW.csv
+│     └── ...
+└── README.md                  ← 本文件
 ```
 
 ---
 
-## 🏃‍♂️ 快速開始
+# 🚀 如何快速開始？
 
-### 1. 完全自動 — 抓清單 ➜ 抓股價 ➜ 篩選
+## 1️⃣ 安裝 Python + pip 套件
 ```bash
-python tw_stock_screen.py --start 2022-01-01 --end 2025-12-31 --report_all
+pip install requests yfinance pyyaml pandas numpy
 ```
 
-### 2. 使用你自己的清單
-```bash
-python tw_stock_screen.py --from_csv twse.csv tpex.csv --start 2022-01-01 --end 2025-12-31 --report_all
-```
-
-### 3. 指定特定股票
-```bash
-python tw_stock_screen.py --codes 2330,2317,8046 --report_all
-```
+（程式會自動檢查，沒有就自動安裝）
 
 ---
 
-## ⚙️ 所有 CLI 參數（完整版）
+## 2️⃣ 編輯 config.yaml（全部參數化）
 
-### 🎯 清單來源
-
-| 參數 | 說明 |
-|------|------|
-| `--skip_fetch` | 不抓 TWSE / TPEx 清單 |
-| `--from_csv` | 指定 CSV 清單來源 |
-| `--tickers` | 一行一個代碼 |
-| `--codes` | 直接輸入股票代碼 |
-| `--market` | TW / TWO |
-
----
-
-## 📅 資料期間
-
-| 參數 | 說明 |
-|------|------|
-| `--start` | 開始日期 |
-| `--end` | 結束日期（預設今日） |
-
-**建議抓 2.5 ～ 3 年資料**  
-讓 EMA117 / ADX / MACD 有足夠「暖機」資料。
-
----
-
-## 📊 技術指標參數（完全可調）
-
-### 📈 EMA（均線）
-| 參數 | 預設 | 說明 |
-|------|------|------|
-| `--ema` | 117 | EMA 期數（中期趨勢線） |
-
----
-
-### 🔊 成交量均線（量增判斷）
-| 參數 | 預設 | 說明 |
-|------|------|------|
-| `--vol_fast` | 5 | 快線均量 |
-| `--vol_slow` | 10 | 慢線均量 |
-
----
-
-### 🎚️ KD 指標
-| 參數 | 預設 | 說明 |
-|------|------|------|
-| `--kd_n` | 9 | KD 回看區間 |
-| `--kd_k` | 3 | K 平滑 |
-| `--kd_d` | 3 | D 平滑 |
-| `--kmin` | 20 | K 最低 |
-| `--kmax` | 80 | K 最高 |
-| `--dmin` | 20 | D 最低 |
-| `--dmax` | 80 | D 最高 |
-
----
-
-### 📉 ADX 趨勢強度
-| 參數 | 預設 | 說明 |
-|------|------|------|
-| `--adx_period` | 14 | ADX 計算期數 |
-| `--adx` | 33 | 趨勢強度門檻 |
-
----
-
-### 📉 MACD 多頭動能
-| 參數 | 預設 | 說明 |
-|------|------|------|
-| `--macd_fast` | 12 | 快線 EMA |
-| `--macd_slow` | 26 | 慢線 EMA |
-| `--macd_signal` | 9 | 訊號線 |
-| `--macd_pos` | true | 是否要求 MACD > 0 |
-| `--macd_cross` | true | MACD 線 > 訊號線（黃金交叉） |
-
----
-
-## 📝 YAML 設定檔（含中文註解）
+以下是範例（實際檔案已另存，也可依需求調整）：
 
 ```yaml
-ema_period: 117            # 中期均線；越大越平滑
-vol_fast: 5                 # 快速成交量均線
-vol_slow: 10                # 慢速成交量均線
+ema_period: 117
+vol_fast: 5
+vol_slow: 10
 
-kd_n: 9                     # KD 計算視窗
-kd_k: 3                     # K 平滑
-kd_d: 3                     # D 平滑
-kmin: 20                    # K 最低區間
-kmax: 80                    # K 最高區間
-dmin: 20                    # D 最低區間
-dmax: 80                    # D 最高區間
+kd_n: 9
+kd_k: 3
+kd_d: 3
+kmin: 20
+kmax: 80
+dmin: 20
+dmax: 80
 
-adx_period: 14              # ADX 計算視窗
-adx_min: 33.0               # 趨勢強度需 > 33
+adx_period: 14
+adx_min: 33
 
-macd_fast: 12               # MACD 快線 EMA
-macd_slow: 26               # MACD 慢線 EMA
-macd_signal: 9              # MACD 訊號線
-macd_require_positive: true # MACD 是否必須 > 0
-macd_require_cross: true    # MACD 線需大於訊號線（黃金交叉）
+macd_fast: 12
+macd_slow: 26
+macd_signal: 9
+macd_require_positive: true
+macd_require_cross: true
+
+# 出場條件
+exit_ema_break_bars: 2
+exit_volume_fade: true
+exit_macd_flip: true
+exit_adx_weaken: true
+exit_adx_weak_threshold: 25
+exit_adx_weak_bars: 3
+exit_kd_death_high: true
+
+# 推播
+telegram_token: "你的TOKEN"
+telegram_chat_id: "你的CHAT_ID"
+notify_on_entry: true
+notify_on_exit: true
+
+# 回測
+enable_backtest: true
+backtest_initial_capital: 1000000
+backtest_risk_per_trade: 0.1
+backtest_commission_pct: 0.001
+backtest_slippage_pct: 0.001
+backtest_min_holding_days: 3
 ```
 
 ---
 
-## 📤 輸出說明
+## 3️⃣ 填寫持股清單 held_stocks.txt
 
-| 檔案 | 說明 |
-|------|------|
-| `tw_screen_results.csv` | 符合條件的股票 |
-| `tw_screen_report_all.csv` | 全部股票＋各條件通過與指標值 |
+內容：
+
+```
+2330
+2603
+5483
+```
+
+代表：
+
+- **進場訊號**：全市場都會推播
+- **出場訊號**：只有「你有持有的股票」才會推播（避免被洗版）
 
 ---
 
-## ❓ 為什麼使用這五大條件？
+# 🧠 策略包含哪些進場條件？
 
-1. **EMA117：** 判斷大趨勢  
-2. **量增：** 買盤在推動，而不是假突破  
-3. **KD 區間：** 避免追高（>80）與撿刀（<20）  
-4. **ADX>33：** 確定是強趨勢而不是盤整  
-5. **MACD 多頭：** 動能翻多，確實有人正在買  
+五大進場條件：
 
-➡ 五項同時成立 = **短波高勝率進場點**
+| 條件 | 說明 |
+|------|------|
+| cond1 | 收盤價高於 EMA117 |
+| cond2 | 量能放大：5日均量 > 10日均量 |
+| cond3 | KD 落在合理區間（20~80） |
+| cond4 | ADX > 33，趨勢強 |
+| cond5 | MACD 多頭：>0 且 MACD > SIGNAL |
+
+全為 True 才會被視為「進場訊號」。
+
+---
+
+# 📤 出場條件（中文超白話）
+
+| 條件代碼 | 說明 |
+|---------|------|
+| trend_break_EMA | 股價連續數天跌破 EMA，趨勢轉弱 |
+| volume_fade | 量縮＋跌破 MA5，買盤力道下降 |
+| macd_flip_down | MACD 多翻空 |
+| adx_below_threshold | ADX < 25，趨勢疲弱 |
+| adx_weaken | ADX 連續走弱（N 天） |
+| kd_death_cross_>80 | KD 高檔死亡交叉，短線反轉 |
+
+---
+
+# 📲 Telegram 推播示範
+
+## 進場通知（emoji 美化）：
+
+```
+🚀 進場訊號：2330.TW
+📅 日期：2024-11-01
+💰 收盤：591.00
+📊 EMA117：560.33
+🔍 KD：K=45.2 / D=48.1
+📈 ADX：36.8
+📤 MACD：上升中
+⭐ 綜合評分：0.812
+```
+
+---
+
+## 出場通知（只對你持有的股票）：
+
+```
+⚠️ 出場訊號：2330.TW
+📅 日期：2024-11-01
+💰 收盤：580.00
+
+📌 出場原因：
+• MACD 由多轉空
+• ADX 趨勢力道變弱
+```
+
+---
+
+# 🔄 如何執行？
+
+## 全市場掃描
+```bash
+python tw_stock_pipeline.py   --start 2023-01-01   --end   2025-12-31   --config config.yaml   --report_all   --out tw_screen_results.csv
+```
+
+---
+
+## 指定掃描特定股票
+```bash
+python tw_stock_pipeline.py --codes 2330.TW,2603.TW
+```
+
+---
+
+# 🧪 回測（單檔）
+
+```bash
+python tw_stock_pipeline.py   --start 2020-01-01   --end   2025-12-31   --config config.yaml   --backtest_codes 2330.TW   --backtest_out backtest_2330.csv
+```
+
+輸出：
+
+- 總報酬率
+- 年化報酬率 CAGR
+- 勝率
+- 每一筆交易進場/出場價格
+- 交易理由
+- 交易明細 CSV
+
+---
+
