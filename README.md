@@ -53,49 +53,72 @@ pip install requests yfinance pyyaml pandas numpy
 以下是範例（實際檔案已另存，也可依需求調整）：
 
 ```yaml
-ema_period: 117
-vol_fast: 5
-vol_slow: 10
+ema_period: 117        # EMA 週期，越大越偏中長期
+vol_fast: 5            # 短均量天數（放量判斷）
+vol_slow: 10           # 長均量天數
 
-kd_n: 9
-kd_k: 3
-kd_d: 3
-kmin: 20
-kmax: 80
-dmin: 20
-dmax: 80
+kd_n: 9                # KD 計算區間
+kd_k: 3                # K 線平滑
+kd_d: 3                # D 線平滑
+kmin: 20               # K 下界（避免撿飛刀）
+kmax: 80               # K 上界（避免追太高）
+dmin: 20               # D 下界
+dmax: 80               # D 上界
 
-adx_period: 14
-adx_min: 33
+adx_period: 14         # ADX 計算週期
+adx_min: 33.0          # ADX 趨勢強度門檻（>33 通常是有趨勢）
 
-macd_fast: 12
-macd_slow: 26
-macd_signal: 9
-macd_require_positive: true
-macd_require_cross: true
+macd_fast: 12          # MACD 快線
+macd_slow: 26          # MACD 慢線
+macd_signal: 9         # MACD 訊號線
+macd_require_positive: true   # 是否要求 MACD > 0
+macd_require_cross: true      # 是否要求 MACD 線 > 訊號線
 
-# 出場條件
-exit_ema_break_bars: 2
-exit_volume_fade: true
-exit_macd_flip: true
-exit_adx_weaken: true
-exit_adx_weak_threshold: 25
-exit_adx_weak_bars: 3
-exit_kd_death_high: true
+# ------------------------------------------------------------
+# 出場條件設定（訊號只會對持股清單推播）
+# ------------------------------------------------------------
+exit_ema_break_bars: 2        # 連續 N 天收盤都在 EMA 下面 → 趨勢轉弱
+exit_volume_fade: true        # 量縮 + 跌破 MA5 → 量能轉弱
+exit_macd_flip: true          # MACD 翻空（MACD < 訊號線 且 < 0）
+exit_adx_weaken: true         # ADX 持續走弱
+exit_adx_weak_threshold: 25   # ADX 低於此值 → 趨勢不足
+exit_adx_weak_bars: 3         # ADX 連續 N 根往下
+exit_kd_death_high: true      # KD > 80 高檔死亡交叉
 
-# 推播
-telegram_token: "你的TOKEN"
-telegram_chat_id: "你的CHAT_ID"
-notify_on_entry: true
-notify_on_exit: true
+# ------------------------------------------------------------
+# 停損 / 追蹤停損設定
+# ------------------------------------------------------------
+stop_atr_period: 14           # ATR 計算 period
+stop_atr_mult: 2.0            # 初始停損 = 收盤 - ATR * 倍數
+trail_use_ema: true           # 是否啟用 EMA 當追蹤停損
+trail_ema_period: 50          # 追蹤停損用的 EMA 週期
 
-# 回測
-enable_backtest: true
-backtest_initial_capital: 1000000
-backtest_risk_per_trade: 0.1
-backtest_commission_pct: 0.001
-backtest_slippage_pct: 0.001
-backtest_min_holding_days: 3
+# ------------------------------------------------------------
+# 評分權重（用來排序用）
+# ------------------------------------------------------------
+score_w_trend: 0.3            # 趨勢強度（收盤 / EMA）
+score_w_vol: 0.2              # 量能放大（短均量 / 長均量）
+score_w_adx: 0.3              # 趨勢穩定度（ADX / adx_min）
+score_w_macd: 0.2             # MACD 動能
+
+# ------------------------------------------------------------
+# Telegram 推播設定
+# ------------------------------------------------------------
+telegram_token: "telegram_token"   # 這裡換成你的 Bot Token
+telegram_chat_id: "telegram_chat_id"            # 這裡換成你的 Chat ID
+notify_on_entry: true                       # 是否推播進場訊號
+notify_on_exit: true                        # 是否推播出場訊號（只對持股）
+
+# ------------------------------------------------------------
+# 回測設定（選用）
+# ------------------------------------------------------------
+enable_backtest: true              # true = 執行完掃描後會做回測
+backtest_initial_capital: 1000000   # 初始資金
+backtest_risk_per_trade: 0.1        # 單筆部位最大資金比例（0.1 = 10%）
+backtest_commission_pct: 0.001      # 單邊手續費（0.1%）
+backtest_slippage_pct: 0.001        # 假設滑價（0.1%）
+backtest_max_positions: 1           # 保留參數（目前簡化: 單檔輪動）
+backtest_min_holding_days: 3        # 保留參數（目前程式未強制使用）
 ```
 
 ---
