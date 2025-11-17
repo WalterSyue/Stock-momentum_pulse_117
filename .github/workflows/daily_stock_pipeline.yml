@@ -1,0 +1,45 @@
+name: Daily TW Stock Pipeline
+
+on:
+  schedule:
+    - cron: "0 8 * * 1-5"   # 每天台灣上午09:00執行（UTC+8 → UTC1）
+  workflow_dispatch:        # 手動觸發
+
+jobs:
+  run-tw-stock-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run TW Stock pipeline
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python tw_stock_pipeline.py \
+          --start 2023-01-01 \
+          --end $(date +"%Y-%m-%d") \
+          --config config.yaml \
+          --report_all \
+          --out tw_screen_results.csv
+
+    - name: Upload results artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tw_stock_results
+        path: |
+          tw_screen_results.csv
+          tw_all_results.csv
+

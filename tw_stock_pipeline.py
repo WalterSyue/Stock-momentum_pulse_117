@@ -763,8 +763,8 @@ def calc_cagr(start_value: float, end_value: float, years: float) -> float:
 def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
     """
     簡易單檔回測（T+1 開盤價模擬）：
-    - 在第 i 根 K 棒，依當天收盤後的指標決定「明天是否進/出場」
-    - 實際成交價：第 i+1 天「開盤價」＋滑價
+    - 第 i 根 K 棒收盤後，根據當天指標決定「隔天開盤」是否進/出場
+    - 實際成交價 = 第 i+1 天開盤價 ± 滑價
     - 回傳：
         stat: 總報酬率 / 年化報酬率 / 勝率...
         trades_detail: 每一筆交易（進出場日期 / 價格 / 損益 / 原因）
@@ -773,11 +773,13 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
     if df.empty:
         return {}, []
 
-    initial_capital   = float(cfg.get("backtest_initial_capital", 1_000_000))
-    risk_pct          = float(cfg.get("backtest_risk_per_trade", 0.1))   # 單筆部位資金比例
-    commission_pct    = float(cfg.get("backtest_commission_pct", 0.001))
-    slippage_pct      = float(cfg.get("backtest_slippage_pct", 0.001))
+    # === 參數 ===
+    initial_capital = float(cfg.get("backtest_initial_capital", 1_000_000))
+    risk_pct        = float(cfg.get("backtest_risk_per_trade", 0.1))
+    commission_pct  = float(cfg.get("backtest_commission_pct", 0.001))
+    slippage_pct    = float(cfg.get("backtest_slippage_pct", 0.001))
 
+    # === 狀態變數 ===
     cash        = initial_capital
     position    = 0
     entry_price = 0.0
@@ -787,23 +789,24 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
     trades_pnl    = []
     trades_detail = []
 
-    idx_list = list(df.index)
-    n        = len(idx_list)
+    # 先把價格變成 numpy，之後全部用純 float → 不會再有 FutureWarning
+    closes = df["Close"].astype(float).to_numpy().reshape(-1)
+    opens  = df["Open"].astype(float).to_numpy().reshape(-1)
+
+    idx    = list(df.index)
+    n      = len(idx)
 
     # 因為要用「隔天開盤」，最後一天沒得交易，所以只跑到 n-2
     for i in range(50, n - 1):
-        sub      = df.iloc[: i + 1]     # 給策略看的歷史（含當天）
-        today    = df.iloc[i]
-        next_bar = df.iloc[i + 1]       # 實際進出場的價位
+        sub = df.iloc[: i + 1]          # 給策略看的歷史（含今天）
+        cur_date  = idx[i]
+        next_date = idx[i + 1]
 
-        px_close_today = float(today["Close"])
-        px_open_next   = float(next_bar["Open"])
+        px_close_today = float(closes[i])
+        px_open_next   = float(opens[i + 1])
 
         # 更新「今天收盤」的資產淨值（只是記錄績效曲線）
-        if position > 0:
-            equity = cash + position * px_close_today
-        else:
-            equity = cash
+        equity = cash + position * px_close_today if position > 0 else cash
         equity_curve.append(equity)
 
         # 用到目前為止的資料算指標 → 決定是否在「明天開盤」進 / 出場
@@ -820,8 +823,8 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
             trades_pnl.append(profit)
 
             trades_detail.append({
-                "進場日期": entry_date.date().isoformat() if entry_date else "",
-                "退場日期": next_bar.name.date().isoformat(),
+                "進場日期": entry_date.date().isoformat() if entry_date is not None else "",
+                "退場日期": next_date.date().isoformat(),
                 "進場價格": entry_price,
                 "退場價格": sell_price,
                 "股數": position,
@@ -848,8 +851,8 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
             if qty <= 0:
                 continue
 
-            cost = buy_price * qty
-            fee  = cost * commission_pct
+            cost       = buy_price * qty
+            fee        = cost * commission_pct
             total_cost = cost + fee
             if total_cost > cash:
                 continue
@@ -857,12 +860,12 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
             cash       -= total_cost
             position    = qty
             entry_price = buy_price
-            entry_date  = next_bar.name   # 進場日 = 實際成交那天（隔天）
+            entry_date  = next_date   # 進場日 = 實際成交那天（隔天）
 
     # === 迴圈跑完但還有部位 → 用最後一根 K 的收盤價強制平倉 ===
     if position > 0:
-        last_bar   = df.iloc[-1]
-        last_close = float(last_bar["Close"])
+        last_date  = idx[-1]
+        last_close = float(closes[-1])
         sell_price = last_close * (1.0 - slippage_pct)
         gross      = sell_price * position
         fee        = gross * commission_pct
@@ -872,8 +875,8 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
         trades_pnl.append(profit)
 
         trades_detail.append({
-            "進場日期": entry_date.date().isoformat() if entry_date else "",
-            "退場日期": last_bar.name.date().isoformat(),
+            "進場日期": entry_date.date().isoformat() if entry_date is not None else "",
+            "退場日期": last_date.date().isoformat(),
             "進場價格": entry_price,
             "退場價格": sell_price,
             "股數": position,
@@ -888,6 +891,7 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
         entry_price = 0.0
         entry_date  = None
 
+    # === 統計結果 ===
     final_equity = cash if not equity_curve else equity_curve[-1]
     total_return = (final_equity / initial_capital) - 1.0
 
