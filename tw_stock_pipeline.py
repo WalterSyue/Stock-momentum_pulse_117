@@ -3,7 +3,7 @@
 """
 tw_stock_pipeline.py
 小壞蛋台股終極策略：
-- 全市場掃描 + 五大進場條件
+- 全市場掃描 + 五大進場條件 + 法人四週 A+B（A 只當參考資訊，不是硬條件）
 - 出場訊號（只對你持有清單推播）
 - Telegram 卡片推播（中文）
 - valid_tw_codes 名單 + cache + error blacklist
@@ -114,7 +114,7 @@ DEFAULT_CFG: Dict[str, Any] = {
     "trail_use_ema": True,
     "trail_ema_period": 50,
 
-    # 評分權重
+    # 評分權重（技術面）
     "score_w_trend": 0.3,
     "score_w_vol": 0.2,
     "score_w_adx": 0.3,
@@ -134,6 +134,12 @@ DEFAULT_CFG: Dict[str, Any] = {
     "backtest_slippage_pct": 0.001,
     "backtest_max_positions": 1,
     "backtest_min_holding_days": 3,
+
+    # 法人相關設定（A = 四週買超資訊，B = 評分，不當硬條件）
+    "score_w_inst": 0.0,               # B：法人強度評分權重（0 = 只當資訊）
+    "inst_lookback": 20,               # 看 20 個交易日 ≒ 4 週
+    "inst_flow_file": "inst_flow.csv", # 三大法人資料檔
+    "inst_norm": 5000.0,               # 正規化基準，買超越大 inst_score 越高
 }
 
 CN_COND_NAMES = {
@@ -142,6 +148,7 @@ CN_COND_NAMES = {
     "cond3": "KD合理區間",
     "cond4": "趨勢強勁",
     "cond5": "MACD多頭",
+    "cond6": "法人4週買超為正",   # 只做資訊，不做硬條件
 }
 
 EXIT_REASON_MAP = {
@@ -452,6 +459,142 @@ def load_price(code: str, start: str, end: str) -> Optional[pd.DataFrame]:
 
 
 # ============================================================
+# 法人資料：自動抓 TWSE T86 + 讀入 inst_flow.csv
+# ============================================================
+
+def build_inst_flow(start: str, end: str, out_path: str) -> None:
+    """
+    自動抓 TWSE 三大法人 T86，產出 inst_flow.csv
+
+    使用 API：
+    https://www.twse.com.tw/rwd/zh/fund/T86?date=YYYYMMDD&selectType=ALL
+
+    產出欄位：
+    date, code, net_inst   （net_inst = 三大法人買賣超「張數」）
+    注意：T86 回傳單位是「股數」，這裡統一除以 1000 轉成「張」。
+    """
+    print(f"📥 build_inst_flow：從 {start} 到 {end} 抓取 TWSE 三大法人資料…")
+
+    try:
+        d_start = dt.datetime.strptime(start, "%Y-%m-%d").date()
+        d_end   = dt.datetime.strptime(end, "%Y-%m-%d").date()
+    except Exception as e:
+        print(f"⚠ build_inst_flow：日期格式錯誤 {e}，不產生法人資料")
+        return
+
+    records = []
+    cur = d_start
+    while cur <= d_end:
+        # 週末跳過
+        if cur.weekday() >= 5:
+            cur += dt.timedelta(days=1)
+            continue
+
+        dstr = cur.strftime("%Y%m%d")
+        url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={dstr}&selectType=ALL"
+
+        try:
+            r = requests.get(url, headers=UA, timeout=15)
+            js = r.json()
+            data = js.get("data") or []
+            if not data:
+                print(f"[法人] {cur} 無資料（可能非交易日 / API 無回傳）")
+                cur += dt.timedelta(days=1)
+                continue
+
+            for row in data:
+                code = str(row[0]).strip()
+                if not code or not code[0].isdigit():
+                    continue
+
+                # T86 最後一欄是「三大法人買賣超股數合計」
+                net_str = str(row[-1]).replace(",", "")
+                try:
+                    net_shares = int(net_str)       # 股數
+                except Exception:
+                    continue
+
+                net_lots = net_shares / 1000.0     # 轉成「張」
+                records.append({
+                    "date": cur.isoformat(),
+                    "code": code,
+                    "net_inst": net_lots,
+                })
+
+            print(f"[法人] {cur} 抓取成功，{len(data)} 檔")
+            time.sleep(0.3)
+
+        except Exception as e:
+            print(f"[法人] {cur} 抓取失敗：{e}")
+            time.sleep(1.0)
+
+        cur += dt.timedelta(days=1)
+
+    if not records:
+        print("⚠ build_inst_flow：沒有抓到任何法人資料，inst_flow.csv 不會更新")
+        return
+
+    df = pd.DataFrame(records)
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    print(f"✔ 已輸出三大法人資料 → {out_path}（共 {len(df)} 筆記錄）")
+
+
+
+def load_inst_data(path: str) -> Optional[pd.DataFrame]:
+    """
+    讀三大法人資料檔 inst_flow.csv
+
+    預期格式：
+    date,code,net_inst
+    2023-01-02,2330,1234
+    2023-01-02,2603,-500
+    ...
+    """
+    if not os.path.exists(path):
+        print(f"⚠ 找不到法人資料檔：{path}，將略過法人資訊與評分")
+        return None
+
+    df = pd.read_csv(path, dtype={"code": str})
+    if "date" not in df.columns or "code" not in df.columns:
+        print("⚠ inst_flow 檔缺少 date / code 欄位，略過法人功能")
+        return None
+
+    if "net_inst" not in df.columns:
+        print("⚠ inst_flow 檔沒有 net_inst 欄位，略過法人功能")
+        return None
+
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["code", "date"])
+    df = df.set_index(["date", "code"])  # MultiIndex
+    return df
+
+
+def get_inst_series_for_code(inst_df: Optional[pd.DataFrame],
+                             code: str,
+                             index: pd.DatetimeIndex) -> Optional[pd.Series]:
+    """
+    從法人 DataFrame 裡，取出單一股票的 daily net_inst，
+    並對齊到價格 df 的 index（日期）。
+    """
+    if inst_df is None:
+        return None
+
+    m = re.match(r"(\d+)", code)
+    root = m.group(1) if m else None
+    if not root:
+        return None
+
+    try:
+        s = inst_df.xs(root, level="code")["net_inst"]
+    except KeyError:
+        return None
+
+    s = s.reindex(index).fillna(0.0)
+    s.name = "net_inst"
+    return s
+
+
+# ============================================================
 # 技術指標
 # ============================================================
 
@@ -536,6 +679,12 @@ def tg_send(message: str, cfg: Dict[str, Any]) -> None:
 def format_entry_card(code: str, m: Dict[str, Any]) -> str:
     """進場訊號卡片（Telegram HTML 格式）"""
     ema_period = int(m.get("ema_period", 117))
+    inst_4w = m.get("法人4週買超", float("nan"))
+    if np.isnan(inst_4w):
+        inst_text = "資料不足"
+    else:
+        inst_text = f"{inst_4w:.0f} 張"
+
     lines = [
         f"🚀 <b>進場訊號：{code}</b>",
         f"📅 日期：{m['日期']}",
@@ -543,6 +692,7 @@ def format_entry_card(code: str, m: Dict[str, Any]) -> str:
         f"📈 EMA{ema_period}：{m['EMA']:.2f}",
         f"🔍 KD：K={m['K值']:.2f}，D={m['D值']:.2f}",
         f"📊 ADX：{m['ADX']:.2f}",
+        f"🏦 法人4週買超：{inst_text}",
         f"📤 MACD：{m['MACD']:.2f}",
         f"⭐ 綜合評分：{m.get('綜合評分(score)', 0):.3f}",
     ]
@@ -572,15 +722,17 @@ def format_exit_card(code: str, m: Dict[str, Any], reasons: List[str]) -> str:
 
 
 # ============================================================
-# 策略核心：進出場判斷 + 評分
+# 策略核心：進出場判斷 + 評分（含法人 A+B）
 # ============================================================
 
-def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
+def screen_and_exit(df: pd.DataFrame,
+                    cfg: Dict[str, Any],
+                    inst_series: Optional[pd.Series] = None):
     """
     回傳：
-    - metrics: dict（會進 CSV，包含建議進/退場價）
-    - entry_pass: bool 是否符合五大進場條件
-    - conds_map: 五個條件的 True/False
+    - metrics: dict（會進 CSV，包含建議進/退場價 + 法人資訊）
+    - entry_pass: bool 是否符合進場條件（👉 只看五個技術條件）
+    - conds_map: 各條件的 True/False（cond6 只是法人資訊）
     - exit_reasons: list[str] 出場理由代碼（給回測 / 推播用）
     """
     df = df.copy()
@@ -612,27 +764,34 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
 
     # ===== 尾值抽出 =====
     close_last = last_scalar(c)
-    ema_last = last_scalar(ema_val)
+    ema_last   = last_scalar(ema_val)
     vfast_last = last_scalar(vol_fast)
     vslow_last = last_scalar(vol_slow)
-    k_last = last_scalar(k)
-    d_last = last_scalar(d)
-    adx_last = last_scalar(adxN)
-    macd_last = last_scalar(macd_line)
-    sig_last = last_scalar(sig_line)
-    hist_last = last_scalar(hist)
-    ma5_last = last_scalar(ma5)
-    atr_last = last_scalar(atr_val)
+    k_last     = last_scalar(k)
+    d_last     = last_scalar(d)
+    adx_last   = last_scalar(adxN)
+    macd_last  = last_scalar(macd_line)
+    sig_last   = last_scalar(sig_line)
+    hist_last  = last_scalar(hist)
+    ma5_last   = last_scalar(ma5)
+    atr_last   = last_scalar(atr_val)
     trail_last = last_scalar(trail_ema)
 
     latest_day = df.index[-1].date().isoformat()
+
+    # ===== 法人 4 週淨買超（A：資訊用） =====
+    inst_4w_sum = float("nan")
+    if inst_series is not None:
+        lookback = int(cfg.get("inst_lookback", 20))
+        if len(inst_series.dropna()) >= lookback:
+            inst_4w_sum = float(inst_series.rolling(lookback).sum().iloc[-1])
 
     # ===== 初始停損 & 建議價位 =====
     init_stop = float("nan")
     if not np.isnan(close_last) and not np.isnan(atr_last):
         init_stop = close_last - float(cfg["stop_atr_mult"]) * atr_last
 
-    # ===== 進場五大條件 =====
+    # ===== 進場條件（👉 僅五個技術條件） =====
     cond1 = close_last >= ema_last
     cond2 = vfast_last >= vslow_last
     cond3 = (
@@ -640,9 +799,14 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
         and float(cfg["dmin"]) <= d_last <= float(cfg["dmax"])
     )
     cond4 = adx_last > float(cfg["adx_min"])
-    macd_pos = (macd_last > 0.0) if bool(cfg["macd_require_positive"]) else True
+    macd_pos   = (macd_last > 0.0) if bool(cfg["macd_require_positive"]) else True
     macd_cross = (macd_last > sig_last) if bool(cfg["macd_require_cross"]) else True
     cond5 = macd_pos and macd_cross
+
+    # cond6：法人4週是否為正，只做資訊，不影響 entry_pass
+    cond6 = False
+    if not np.isnan(inst_4w_sum):
+        cond6 = inst_4w_sum > 0
 
     entry_pass = all([cond1, cond2, cond3, cond4, cond5])
 
@@ -652,7 +816,7 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
     # EMA 連續 N 天跌破
     N = int(cfg["exit_ema_break_bars"])
     if N > 0 and len(c) >= N:
-        tail_c = c.tail(N).to_numpy(dtype=float)
+        tail_c   = c.tail(N).to_numpy(dtype=float)
         tail_ema = ema_val.tail(N).to_numpy(dtype=float)
         if np.all(tail_c < tail_ema):
             exit_reasons.append("trend_break_EMA")
@@ -682,22 +846,31 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
         if (k_prev > 80.0) and (k_prev > d_prev) and (k_last < d_last):
             exit_reasons.append("kd_death_cross_>80")
 
-    # ===== 綜合評分 =====
+    # ===== 綜合評分（技術 + 可選法人 B） =====
     trend_ratio = close_last / ema_last if ema_last > 0 else 0.0
-    vol_ratio = vfast_last / vslow_last if vslow_last > 0 else 0.0
-    adx_ratio = adx_last / float(cfg["adx_min"]) if float(cfg["adx_min"]) > 0 else 0.0
-    macd_mom = hist_last / close_last if close_last > 0 else 0.0
-    macd_mom = max(0.0, macd_mom)
+    vol_ratio   = vfast_last / vslow_last if vslow_last > 0 else 0.0
+    adx_ratio   = adx_last / float(cfg["adx_min"]) if float(cfg["adx_min"]) > 0 else 0.0
+    macd_mom    = hist_last / close_last if close_last > 0 else 0.0
+    macd_mom    = max(0.0, macd_mom)
 
     trend_ratio = float(np.clip(trend_ratio, 0.0, 2.0))
-    vol_ratio = float(np.clip(vol_ratio, 0.0, 3.0))
-    adx_ratio = float(np.clip(adx_ratio, 0.0, 2.0))
+    vol_ratio   = float(np.clip(vol_ratio,   0.0, 3.0))
+    adx_ratio   = float(np.clip(adx_ratio,   0.0, 2.0))
+
+    # B：法人強度分數（0~1），只影響排序，不影響 entry_pass
+    inst_score = 0.0
+    if not np.isnan(inst_4w_sum):
+        norm = float(cfg.get("inst_norm", 5000.0))
+        if norm > 0:
+            inst_score_raw = np.tanh(inst_4w_sum / norm)
+            inst_score = max(0.0, float(inst_score_raw))
 
     score = (
         float(cfg["score_w_trend"]) * trend_ratio +
-        float(cfg["score_w_vol"]) * vol_ratio +
-        float(cfg["score_w_adx"]) * adx_ratio +
-        float(cfg["score_w_macd"]) * macd_mom
+        float(cfg["score_w_vol"])   * vol_ratio   +
+        float(cfg["score_w_adx"])   * adx_ratio   +
+        float(cfg["score_w_macd"])  * macd_mom    +
+        float(cfg.get("score_w_inst", 0.0)) * inst_score
     )
 
     # ===== 組合回傳欄位 =====
@@ -721,9 +894,9 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
         "初始停損價(ATR)": init_stop,
         f"建議移動停損(EMA{int(cfg['trail_ema_period'])})": trail_last,
 
-        # ⭐ 新增兩個：建議進 / 退場價
-        "建議進場價格": close_last,   # 以當天收盤當作假設進場價
-        "建議退場價格": init_stop,    # 以 ATR 計算的初始停損價當作建議退場價
+        # 建議進 / 退場價
+        "建議進場價格": close_last,   # 當天收盤價視為假設進場價
+        "建議退場價格": init_stop,    # ATR 初始停損價
 
         # 條件結果 / 評分
         "股價高於EMA": bool(cond1),
@@ -731,10 +904,15 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
         "KD合理區間": bool(cond3),
         "趨勢強勁": bool(cond4),
         "MACD多頭": bool(cond5),
+        "法人4週買超通過": bool(cond6),   # 只做展示
         "是否符合": "符合" if entry_pass else "不符合",
         "綜合評分(score)": score,
 
-        # 出場理由（代碼 + 中文）
+        # 法人資訊
+        "法人4週買超": inst_4w_sum,
+        "法人強度分數": inst_score,
+
+        # 出場理由
         "出場原因代碼": ";".join(exit_reasons),
         "出場原因中文": ";".join(exit_cn_list),
     }
@@ -745,13 +923,14 @@ def screen_and_exit(df: pd.DataFrame, cfg: Dict[str, Any]):
         "cond3": cond3,
         "cond4": cond4,
         "cond5": cond5,
+        "cond6": cond6,
     }
 
     return metrics, entry_pass, conds_map, exit_reasons
 
 
 # ============================================================
-# 回測工具
+# 回測工具（T+1 開盤價模擬，含法人）
 # ============================================================
 
 def calc_cagr(start_value: float, end_value: float, years: float) -> float:
@@ -760,7 +939,9 @@ def calc_cagr(start_value: float, end_value: float, years: float) -> float:
     return (end_value / start_value) ** (1.0 / years) - 1.0
 
 
-def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
+def run_backtest_for_code(df: pd.DataFrame,
+                          cfg: Dict[str, Any],
+                          inst_series: Optional[pd.Series] = None):
     """
     簡易單檔回測（T+1 開盤價模擬）：
     - 第 i 根 K 棒收盤後，根據當天指標決定「隔天開盤」是否進/出場
@@ -789,12 +970,11 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
     trades_pnl    = []
     trades_detail = []
 
-    # 先把價格變成 numpy，之後全部用純 float → 不會再有 FutureWarning
     closes = df["Close"].astype(float).to_numpy().reshape(-1)
     opens  = df["Open"].astype(float).to_numpy().reshape(-1)
 
-    idx    = list(df.index)
-    n      = len(idx)
+    idx = list(df.index)
+    n   = len(idx)
 
     # 因為要用「隔天開盤」，最後一天沒得交易，所以只跑到 n-2
     for i in range(50, n - 1):
@@ -805,12 +985,17 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
         px_close_today = float(closes[i])
         px_open_next   = float(opens[i + 1])
 
+        # 法人子序列也切到目前為止
+        sub_inst = None
+        if inst_series is not None:
+            sub_inst = inst_series.iloc[: i + 1]
+
         # 更新「今天收盤」的資產淨值（只是記錄績效曲線）
         equity = cash + position * px_close_today if position > 0 else cash
         equity_curve.append(equity)
 
         # 用到目前為止的資料算指標 → 決定是否在「明天開盤」進 / 出場
-        metrics, entry_ok, conds_map, exit_reasons = screen_and_exit(sub, cfg)
+        metrics, entry_ok, conds_map, exit_reasons = screen_and_exit(sub, cfg, sub_inst)
 
         # === 有部位：若今天出現出場訊號 → 明天開盤價賣出 ===
         if position > 0 and exit_reasons:
@@ -918,7 +1103,6 @@ def run_backtest_for_code(df: pd.DataFrame, cfg: Dict[str, Any]):
     return stat, trades_detail
 
 
-
 # ============================================================
 # 設定檔載入
 # ============================================================
@@ -967,6 +1151,19 @@ def main():
     cfg = load_config(args.config)
     held_roots = load_held_stocks()
 
+    # 讀法人資料（檔案不存在就自動抓 T86）
+    inst_df: Optional[pd.DataFrame] = None
+    inst_path = cfg.get("inst_flow_file", "inst_flow.csv")
+
+    if not os.path.exists(inst_path):
+        print(f"⚠ 找不到 {inst_path}，自動從 TWSE 抓取三大法人資料產生…")
+        build_inst_flow(args.start, args.end, inst_path)
+
+    inst_df = load_inst_data(inst_path)
+    if inst_df is None:
+        print("⚠ 無法載入法人資料，將只使用技術面條件與評分")
+        cfg["score_w_inst"] = 0.0
+
     # 準備股票清單
     if args.codes:
         codes = []
@@ -994,7 +1191,9 @@ def main():
             print(f"❌ 無法取得 {code} 價格資料，已加入黑名單或略過")
             continue
 
-        metrics, entry_pass, conds_map, exit_reasons = screen_and_exit(df, cfg)
+        inst_series = get_inst_series_for_code(inst_df, code, df.index)
+
+        metrics, entry_pass, conds_map, exit_reasons = screen_and_exit(df, cfg, inst_series)
         row = {"代碼": code, **metrics}
         all_rows.append(row)
 
@@ -1003,7 +1202,13 @@ def main():
             passed_rows.append(row)
             print(f"✅ 符合：{code}（score={metrics['綜合評分(score)']:.3f}）")
         else:
-            failed = [CN_COND_NAMES[k] for k, v in conds_map.items() if not v]
+            # 只列出沒過的五個技術條件（法人只做參考）
+            failed = [
+                name
+                for k, name in CN_COND_NAMES.items()
+                if k in ("cond1", "cond2", "cond3", "cond4", "cond5")
+                and not conds_map.get(k, True)
+            ]
             if failed:
                 print(f"❌ 不符合：{code}（未過：{', '.join(failed)}）")
             else:
@@ -1051,7 +1256,9 @@ def main():
                 print(f"    ⚠ 無法取得 {code} 資料，略過")
                 continue
 
-            stat, trades_detail = run_backtest_for_code(df_bt, cfg)
+            inst_series_bt = get_inst_series_for_code(inst_df, code, df_bt.index)
+
+            stat, trades_detail = run_backtest_for_code(df_bt, cfg, inst_series_bt)
             if not stat:
                 print(f"    ⚠ {code} 無法計算回測結果，略過")
                 continue
