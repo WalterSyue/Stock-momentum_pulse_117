@@ -1184,6 +1184,9 @@ def main():
     passed_rows = []
     all_rows = []
 
+    passed_rows = []
+    all_rows = []
+
     for code in codes:
         print(f"\n=== 處理 {code} ===")
         df = load_price(code, args.start, args.end)
@@ -1191,16 +1194,23 @@ def main():
             print(f"❌ 無法取得 {code} 價格資料，已加入黑名單或略過")
             continue
 
+        # 判斷是否為持股（只拿數字根碼，例如 2330）
+        m = re.match(r"(\d+)", code)
+        root = m.group(1) if m else ""
+        is_held = bool(root and root in held_roots)
+
         inst_series = get_inst_series_for_code(inst_df, code, df.index)
 
         metrics, entry_pass, conds_map, exit_reasons = screen_and_exit(df, cfg, inst_series)
         row = {"代碼": code, **metrics}
         all_rows.append(row)
 
-        # 進場結果印出
+        # 進場結果印出（持股一樣會列入 passed_rows & CSV）
         if entry_pass:
             passed_rows.append(row)
             print(f"✅ 符合：{code}（score={metrics['綜合評分(score)']:.3f}）")
+            if is_held:
+                print("   ↳ 已在 held_stocks.txt，略過進場 Telegram 只保留出場通知")
         else:
             # 只列出沒過的五個技術條件（法人只做參考）
             failed = [
@@ -1214,18 +1224,19 @@ def main():
             else:
                 print(f"❌ 不符合：{code}")
 
-        # Telegram 進場推播
-        if entry_pass and cfg.get("notify_on_entry") and cfg.get("telegram_token") and cfg.get("telegram_chat_id"):
+        # Telegram 進場推播：⚠️ 不對「已在持股清單」的推播
+        if (entry_pass and not is_held and
+            cfg.get("notify_on_entry") and
+            cfg.get("telegram_token") and cfg.get("telegram_chat_id")):
             msg = format_entry_card(code, metrics)
             tg_send(msg, cfg)
 
-        # Telegram 出場推播（只對持股清單內的代碼）
-        if exit_reasons and cfg.get("notify_on_exit") and cfg.get("telegram_token") and cfg.get("telegram_chat_id"):
-            m = re.match(r"(\d+)", code)
-            root = m.group(1) if m else ""
-            if root and root in held_roots:
-                msg = format_exit_card(code, metrics, exit_reasons)
-                tg_send(msg, cfg)
+        # Telegram 出場推播：只對持股清單內的代碼
+        if (exit_reasons and is_held and
+            cfg.get("notify_on_exit") and
+            cfg.get("telegram_token") and cfg.get("telegram_chat_id")):
+            msg = format_exit_card(code, metrics, exit_reasons)
+            tg_send(msg, cfg)
 
     # ===== 結果輸出 =====
     if passed_rows:
