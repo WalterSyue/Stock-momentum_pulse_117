@@ -2,7 +2,7 @@ name: Daily TW Stock Pipeline
 
 on:
   schedule:
-    - cron: "0 0 * * 1-5"   # 每天台灣上午09:00執行（UTC+8 → UTC1）
+    - cron: "30 0 * * 1-5"   # 每天台灣上午09:00執行（UTC+8 → UTC1）
   workflow_dispatch:        # 手動觸發
 
 jobs:
